@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Hub — админка</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --text:#e8eaed; --muted:#9aa0a6; --acc:#8b5cf6; --ok:#22c55e; --bad:#f43f5e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+    header h1 { margin:0; font-size:1.15rem; }
+    main { max-width:1100px; margin:0 auto; padding:20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:16px; }
+    label { display:block; font-size:.8rem; color:var(--muted); margin:10px 0 4px; }
+    input, select, textarea { width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#12151a; color:var(--text); }
+    button, .btn { cursor:pointer; border:0; border-radius:10px; padding:10px 14px; background:var(--acc); color:#fff; font-weight:600; }
+    button.ghost { background:transparent; border:1px solid var(--line); color:var(--text); }
+    button.bad { background:var(--bad); }
+    button:disabled { opacity:.5; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); }
+    .stat { background:#12151a; border-radius:12px; padding:14px; }
+    .stat b { display:block; font-size:1.4rem; }
+    .stat span { color:var(--muted); font-size:.8rem; }
+    table { width:100%; border-collapse:collapse; font-size:.88rem; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    .ok { color:var(--ok); } .bad { color:var(--bad); }
+    .muted { color:var(--muted); font-size:.85rem; }
+    .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:16px; }
+    .tabs button { background:#12151a; }
+    .tabs button.on { background:var(--acc); }
+    .hidden { display:none !important; }
+    code { background:#12151a; padding:2px 6px; border-radius:6px; font-size:.85rem; word-break:break-all; }
+    .err { color:var(--bad); margin-top:8px; }
+    .okmsg { color:var(--ok); margin-top:8px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>LLM Hub</h1>
+  <div class="row" id="hdr-user"></div>
+</header>
+<main>
+  <!-- CONFIG: только publishable / anon. Secret сюда НЕ вставлять -->
+  <div class="card" id="cfg-card">
+    <h2>Подключение</h2>
+    <p class="muted">URL и publishable-ключ можно сохранить в браузере. <b>Secret / service_role в админку не вставляйте</b> — только в Edge Functions.</p>
+    <label>SUPABASE_URL</label>
+    <input id="cfg-url" placeholder="https://xxxx.supabase.co" />
+    <label>Publishable / anon key</label>
+    <input id="cfg-anon" type="password" placeholder="sb_publishable_… или eyJ…" />
+    <div class="row" style="margin-top:12px">
+      <button type="button" id="btn-save-cfg">Сохранить</button>
+    </div>
+  </div>
+
+  <div class="card" id="login-card">
+    <h2>Вход администратора</h2>
+    <label>Email</label>
+    <input id="email" type="email" autocomplete="username" />
+    <label>Пароль</label>
+    <input id="password" type="password" autocomplete="current-password" />
+    <div class="row" style="margin-top:12px">
+      <button type="button" id="btn-login">Войти</button>
+      <button type="button" class="ghost" id="btn-signup">Создать аккаунт</button>
+      <button type="button" class="ghost" id="btn-boot">Стать первым админом</button>
+    </div>
+    <p class="muted">Первый раз: Sign up → «Стать первым админом» (если hub_admins пуст). Дальше — только выданные вами админы.</p>
+    <div id="login-msg"></div>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="tabs">
+      <button type="button" class="on" data-tab="dash">Сводка</button>
+      <button type="button" data-tab="keys">Ключи проектов</button>
+      <button type="button" data-tab="usage">История</button>
+      <button type="button" data-tab="secrets">Провайдеры</button>
+    </div>
+
+    <section id="tab-dash">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Сводка (7 дней)</h2>
+          <button type="button" class="ghost" id="btn-refresh">Обновить</button>
+        </div>
+        <div class="grid" id="stats-grid" style="margin-top:12px"></div>
+        <div id="stats-by" style="margin-top:16px"></div>
+      </div>
+    </section>
+
+    <section id="tab-keys" class="hidden">
+      <div class="card">
+        <h2>Новый ключ</h2>
+        <label>Код проекта (латиница)</label>
+        <input id="new-name" placeholder="orbit" />
+        <label>Название</label>
+        <input id="new-display" placeholder="Школьный планер" />
+        <label>Лимит запросов / сутки</label>
+        <input id="new-limit" type="number" value="500" />
+        <label>Провайдер по умолчанию</label>
+        <select id="new-prov"><option value="giga">giga</option><option value="grok">grok</option><option value="deepseek">deepseek</option><option value="openai">openai</option></select>
+        <div class="row" style="margin-top:12px"><button type="button" id="btn-create">Создать ключ</button></div>
+        <div id="create-msg"></div>
+      </div>
+      <div class="card">
+        <h2>Ключи</h2>
+        <div id="keys-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-usage" class="hidden">
+      <div class="card">
+        <h2>История запросов</h2>
+        <div id="usage-table"></div>
+      </div>
+    </section>
+
+    <section id="tab-secrets" class="hidden">
+      <div class="card">
+        <h2>Секреты провайдеров</h2>
+        <p class="muted">Хранятся только в Supabase. В GitHub Pages не попадают.</p>
+        <label>Провайдер</label>
+        <select id="sec-prov"><option>giga</option><option>grok</option><option>deepseek</option><option>openai</option><option>claude</option></select>
+        <label>Label</label>
+        <input id="sec-label" value="default" />
+        <label>Client ID (GigaChat)</label>
+        <input id="sec-cid" />
+        <label>Client Secret (GigaChat)</label>
+        <input id="sec-csec" type="password" />
+        <label>Authorization Key base64 (опц.)</label>
+        <input id="sec-auth" type="password" />
+        <label>API Key (Grok/DeepSeek/OpenAI)</label>
+        <input id="sec-key" type="password" />
+        <label>Base URL</label>
+        <input id="sec-base" placeholder="https://api.x.ai/v1" />
+        <label>Модель по умолчанию</label>
+        <input id="sec-model" placeholder="GigaChat" />
+        <div class="row" style="margin-top:12px"><button type="button" id="btn-sec-save">Сохранить секрет</button></div>
+        <div id="sec-msg"></div>
+        <div id="sec-list" style="margin-top:16px"></div>
+      </div>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+  const LS_URL = 'hub_supabase_url';
+  const LS_ANON = 'hub_supabase_anon';
+  let sb = null;
+  let session = null;
+
+  const $ = (id) => document.getElementById(id);
+  const cfgUrl = $('cfg-url');
+  const cfgAnon = $('cfg-anon');
+  cfgUrl.value = localStorage.getItem(LS_URL) || 'https://dblnkmtkuzdbqkunjvkf.supabase.co';
+  cfgAnon.value = localStorage.getItem(LS_ANON) || '';
+
+  function client() {
+    const url = cfgUrl.value.trim().replace(/\/$/, '');
+    const anon = cfgAnon.value.trim();
+    if (!url || !anon) throw new Error('Укажите URL и publishable key');
+    return window.supabase.createClient(url, anon);
+  }
+
+  function fnUrl(name) {
+    return cfgUrl.value.trim().replace(/\/$/, '') + '/functions/v1/' + name;
+  }
+
+  async function adminApi(action, payload = {}) {
+    if (!session?.access_token) throw new Error('Нет сессии');
+    const res = await fetch(fnUrl('admin-api'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + session.access_token,
+        apikey: cfgAnon.value.trim(),
+      },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  $('btn-save-cfg').onclick = () => {
+    localStorage.setItem(LS_URL, cfgUrl.value.trim());
+    localStorage.setItem(LS_ANON, cfgAnon.value.trim());
+    alert('Сохранено в этом браузере');
+  };
+
+  async function afterAuth() {
+    $('login-card').classList.add('hidden');
+    $('app').classList.remove('hidden');
+    $('hdr-user').innerHTML = '<span class="muted">' + (session.user.email || '') + '</span> <button type="button" class="ghost" id="btn-out">Выйти</button>';
+    $('btn-out').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+    await refreshAll();
+  }
+
+  $('btn-login').onclick = async () => {
+    try {
+      sb = client();
+      const { data, error } = await sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('password').value });
+      if (error) throw error;
+      session = data.session;
+      await afterAuth();
+    } catch (e) { $('login-msg').innerHTML = '<p class="err">' + e.message + '</p>'; }
+  };
+
+  $('btn-signup').onclick = async () => {
+    try {
+      sb = client();
+      const { data, error } = await sb.auth.signUp({ email: $('email').value.trim(), password: $('password').value });
+      if (error) throw error;
+      session = data.session;
+      $('login-msg').innerHTML = '<p class="okmsg">Аккаунт создан. Если письмо подтверждения включено — подтвердите email. Затем «Стать первым админом».</p>';
+      if (session) await afterAuth();
+    } catch (e) { $('login-msg').innerHTML = '<p class="err">' + e.message + '</p>'; }
+  };
+
+  $('btn-boot').onclick = async () => {
+    try {
+      if (!session) {
+        sb = client();
+        const { data, error } = await sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('password').value });
+        if (error) throw error;
+        session = data.session;
+      }
+      const r = await adminApi('bootstrap_admin');
+      $('login-msg').innerHTML = '<p class="okmsg">' + (r.msg || 'OK') + '</p>';
+      await afterAuth();
+    } catch (e) { $('login-msg').innerHTML = '<p class="err">' + e.message + '</p>'; }
+  };
+
+  document.querySelectorAll('.tabs button').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      ['dash','keys','usage','secrets'].forEach(t => {
+        $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab);
+      });
+    };
+  });
+
+  async function refreshAll() {
+    try {
+      const st = await adminApi('stats', { days: 7 });
+      const s = st.stats || {};
+      $('stats-grid').innerHTML = [
+        ['Проекты', s.projects_total],
+        ['Активных', s.projects_enabled],
+        ['Запросов', s.requests],
+        ['Успешных', s.ok],
+        ['Токенов', s.tokens],
+      ].map(([a,b]) => '<div class="stat"><b>' + (b ?? 0) + '</b><span>' + a + '</span></div>').join('');
+      const bp = s.by_project || [];
+      $('stats-by').innerHTML = '<table><tr><th>Проект</th><th>Запросы</th><th>Токены</th><th></th></tr>' +
+        bp.map(p => '<tr><td>' + esc(p.display_name || p.name) + '</td><td>' + p.requests + '</td><td>' + p.tokens + '</td><td>' + (p.enabled ? '<span class="ok">on</span>' : '<span class="bad">off</span>') + '</td></tr>').join('') + '</table>';
+
+      const pr = await adminApi('list_projects');
+      $('keys-table').innerHTML = '<table><tr><th>Имя</th><th>Ключ</th><th>Лимит</th><th></th></tr>' +
+        (pr.projects || []).map(p => '<tr><td><b>' + esc(p.display_name || p.name) + '</b><br><span class="muted">' + esc(p.name) + '</span></td><td><code>' + esc(p.api_key) + '</code></td><td>' + p.rate_limit_day + '/день<br>' + (p.enabled ? '<span class="ok">вкл</span>' : '<span class="bad">стоп</span>') + '</td><td class="row">' +
+          '<button type="button" class="ghost" data-act="toggle" data-id="' + p.id + '" data-en="' + (p.enabled ? '0' : '1') + '">' + (p.enabled ? 'Стоп' : 'Старт') + '</button>' +
+          '<button type="button" class="ghost" data-act="rotate" data-id="' + p.id + '">Новый ключ</button>' +
+          '<button type="button" class="bad" data-act="del" data-id="' + p.id + '">Удалить</button></td></tr>').join('') + '</table>';
+
+      $('keys-table').onclick = async (e) => {
+        const btn = e.target.closest('button[data-act]'); if (!btn) return;
+        try {
+          if (btn.dataset.act === 'toggle') await adminApi('set_enabled', { id: btn.dataset.id, enabled: btn.dataset.en === '1' });
+          if (btn.dataset.act === 'rotate') {
+            if (!confirm('Старый ключ перестанет работать. Продолжить?')) return;
+            const r = await adminApi('rotate_key', { id: btn.dataset.id });
+            alert('Новый ключ:\n' + r.project.api_key);
+          }
+          if (btn.dataset.act === 'del') {
+            if (!confirm('Удалить проект и ключ?')) return;
+            await adminApi('delete_project', { id: btn.dataset.id });
+          }
+          await refreshAll();
+        } catch (err) { alert(err.message); }
+      };
+
+      const us = await adminApi('list_usage', { limit: 80 });
+      $('usage-table').innerHTML = '<table><tr><th>Время</th><th>Проект</th><th>Провайдер</th><th></th><th>Токены</th><th>Ошибка / превью</th></tr>' +
+        (us.usage || []).map(u => '<tr><td>' + esc(String(u.created_at || '').replace('T',' ').slice(0,19)) + '</td><td>' + esc(u.llm_projects?.name || '') + '</td><td>' + esc(u.provider || '') + '</td><td class="' + (u.ok ? 'ok' : 'bad') + '">' + (u.ok ? 'OK' : u.status_code) + '</td><td>' + (u.tokens_total || 0) + '</td><td class="muted">' + esc(u.error_brief || u.request_preview || '') + '</td></tr>').join('') + '</table>';
+
+      const sm = await adminApi('list_secrets_meta');
+      $('sec-list').innerHTML = '<table><tr><th>Провайдер</th><th>Label</th><th>Модель</th><th></th></tr>' +
+        (sm.secrets || []).map(s => '<tr><td>' + esc(s.provider) + '</td><td>' + esc(s.label) + '</td><td>' + esc(s.default_model || '') + '</td><td>' + (s.enabled ? '<span class="ok">on</span>' : 'off') + '</td></tr>').join('') + '</table>';
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  $('btn-refresh').onclick = () => refreshAll();
+  $('btn-create').onclick = async () => {
+    try {
+      const r = await adminApi('create_project', {
+        name: $('new-name').value.trim(),
+        display_name: $('new-display').value.trim(),
+        rate_limit_day: +$('new-limit').value || 500,
+        provider: $('new-prov').value,
+      });
+      $('create-msg').innerHTML = '<p class="okmsg">Ключ: <code>' + esc(r.project.api_key) + '</code> — скопируйте в приложение</p>';
+      await refreshAll();
+    } catch (e) { $('create-msg').innerHTML = '<p class="err">' + e.message + '</p>'; }
+  };
+
+  $('btn-sec-save').onclick = async () => {
+    try {
+      await adminApi('upsert_secret', {
+        provider: $('sec-prov').value,
+        label: $('sec-label').value.trim() || 'default',
+        client_id: $('sec-cid').value.trim() || null,
+        client_secret: $('sec-csec').value.trim() || null,
+        auth_key: $('sec-auth').value.trim() || null,
+        api_key: $('sec-key').value.trim() || null,
+        base_url: $('sec-base').value.trim() || null,
+        default_model: $('sec-model').value.trim() || null,
+      });
+      $('sec-msg').innerHTML = '<p class="okmsg">Сохранено</p>';
+      await refreshAll();
+    } catch (e) { $('sec-msg').innerHTML = '<p class="err">' + e.message + '</p>'; }
+  };
+
+  function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // auto session
+  try {
+    if (cfgUrl.value && cfgAnon.value) {
+      sb = client();
+      sb.auth.getSession().then(({ data }) => {
+        if (data.session) { session = data.session; afterAuth(); }
+      });
+    }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>
