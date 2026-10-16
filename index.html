@@ -155,7 +155,7 @@
   const $ = (id) => document.getElementById(id);
   const cfgUrl = $('cfg-url');
   const cfgAnon = $('cfg-anon');
-  cfgUrl.value = localStorage.getItem(LS_URL) || 'https://dblnkmtkuzdbqkunjvkf.supabase.co';
+  cfgUrl.value = localStorage.getItem(LS_URL) || '';
   cfgAnon.value = localStorage.getItem(LS_ANON) || '';
 
   function client() {
